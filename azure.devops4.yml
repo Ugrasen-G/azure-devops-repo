@@ -1,0 +1,253 @@
+pool: default
+
+trigger:
+- main
+
+parameters:
+- name: runinfracost
+  displayName: Run Infracost
+  type: boolean
+  default: false
+
+- name: runtfsec
+  displayName: Run tfsec
+  type: boolean
+  default: false
+
+- name: runtflint
+  displayName: Run TFLint
+  type: boolean
+  default: false
+
+- name: runinit
+  displayName: Run Terraform Init
+  type: boolean
+  default: false
+
+- name: runvalidate
+  displayName: Run Terraform Validate
+  type: boolean
+  default: false
+
+- name: runplan
+  displayName: Run Terraform Plan
+  type: boolean
+  default: false
+
+- name: runapply
+  displayName: Run Terraform Apply
+  type: boolean
+  default: false
+
+
+# parameters:
+# - name: environment
+#   displayName: Target environment
+#   type: string
+#   default: 'dev'
+#   values:
+#   - dev
+#   - pre-production
+#   - production
+
+variables:
+ #multiple pipeline k liye
+ # - group: 'general-variables'
+#single pipeline k liye
+
+  WORKING_DIRECTORY: '$(System.DefaultWorkingDirectory)/environment/dev'
+  BACKEND_SERVICE_ARM: 'Ansible'
+  BACKEND_RESOURCE_GROUP_NAME: 'kp1'
+  BACKEND_STORAGE_ACCOUNT_NAME: 'krishn20272026'
+  BACKEND_CONTAINER_NAME: 'container1'
+  BACKEND_TFSTATE_FILE_NAME: 'dev.terraform.tfstate'
+
+
+
+stages:
+
+- stage: tfsecscanstage
+  displayName: Terraform Security Scan
+  jobs:
+  - job: TerraformScan
+    displayName: tfsec
+
+    steps:
+
+    # Install tfsec
+    - task: PowerShell@2
+      displayName: Install tfsec
+      inputs:
+        targetType: inline
+
+    # Run tfsec
+    - task: PowerShell@2
+      displayName: Run tfsec
+      condition: ${{ parameters.runtfsec }}
+      inputs:
+        targetType: inline  
+
+
+- stage: TFLintScanstage
+  displayName: Terraform Security Scan
+  # dependsOn: tfsecscanstage
+  jobs:
+  - job: TerraformScan
+    displayName: TFLint
+
+    steps:          
+
+    # Install TFLit
+    - task: PowerShell@2
+      displayName: Install TFLint
+      inputs:
+        targetType: inline
+       
+    # Run TFLit
+    - task: PowerShell@2
+      displayName: Run TFLint
+      condition: ${{ parameters.runtflint }}
+      inputs:
+        targetType: inline  
+
+- stage: checkovscanstage
+  displayName: Terraform Security Scan
+  # dependsOn: TFLintscanstage
+  jobs:
+  - job: TerraformScan
+    displayName: Checkov
+
+    steps:        
+    
+    # Install Checkov
+    - task: PowerShell@2
+      displayName: Install Checkov
+      inputs:
+        targetType: inline
+        # script: |
+        #   python3 -m pip install --upgrade pip
+        #   pip3 install checkov
+        #   checkov --version
+
+    # Run Checkov
+    - task: PowerShell@2
+      displayName: Run Checkov
+      inputs:
+        targetType: inline
+        # script: |
+        #   checkov -d . --framework terraform
+
+
+- stage: Terraforminit
+  displayName: TerraformInit
+  dependsOn: checkovscanstage
+  jobs:
+  - job:
+    displayName: Terraforminit
+    steps:
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: 'latest'
+    
+    - task: TerraformTask@5
+      displayName: TerraformInit
+      condition: ${{ parameters.runinit }}
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+        backendServiceArm: '$(BACKEND_SERVICE_ARM)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+    - task: TerraformTask@5
+      displayName: Terraformvalidate
+      condition: ${{ parameters.runvalidate }}
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+    - task: TerraformTask@5
+      displayName: Terraformplan
+      condition: ${{ parameters.runplan }}
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        environmentServiceNameAzureRM: 'Ansible'
+    
+- stage: TerraformApply
+  displayName: TerraformApply
+  dependsOn: Terraforminit
+  condition: and(succeeded (), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job:
+    displayName: TerraformApply
+    steps:
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: 'latest'
+    
+    - task: TerraformTask@5
+      displayName: TerraformInit
+
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        backendServiceArm: 'Ansible'
+        backendAzureRmStorageAccountName: 'krishn20272026'
+        backendAzureRmContainerName: 'container1'
+        backendAzureRmKey: 'statefile'
+
+    - task: TerraformTask@5
+      displayName: Terraformplan
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        environmentServiceNameAzureRM: 'Ansible'
+    - task: TerraformTask@5
+      displayName: Terraformapply
+      condition: ${{ parameters.runapply }}
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        environmentServiceNameAzureRM: 'Ansible'
+        commandOptions: '-auto-approve'
+    
+- stage: terraformdestroy
+  displayName: Terraformdestroy
+  dependsOn: TerraformApply
+  # condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['destroy'], 'true'))
+  jobs:
+  - job:
+    displayName: Terraformdestroy
+    steps:
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: 'latest'
+    
+    - task: TerraformTask@5
+      displayName: TerraformInit
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        backendServiceArm: 'Ansible'
+        backendAzureRmStorageAccountName: 'krishn20272026'
+        backendAzureRmContainerName: 'container1'
+        backendAzureRmKey: 'statefile'
+
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'destroy'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        environmentServiceNameAzureRM: 'Ansible'
+        commandOptions: '-auto-approve'
+
+    
